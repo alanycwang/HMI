@@ -1,0 +1,18 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="slider">
+        <file>handle.png</file>
+    </qresource>
+    <qresource prefix="movie-player">
+        <file>back.png</file>
+        <file>forward.png</file>
+        <file>pause.png</file>
+        <file>play.png</file>
+        <file>reverse.png</file>
+        <file>rock.png</file>
+        <file>crop.png</file>
+        <file>home.png</file>
+        <file>track.png</file>
+    </qresource>
+</RCC>
+<!--pyrcc5 ./assets/resources.qrc -o resources.py-->
