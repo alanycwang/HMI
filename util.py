@@ -18,7 +18,7 @@ class Magnetogram():
     rescaled = None
     temp_scale = None
     date = None
-    temp = None # version that is currently "active" in movie player
+    var = {} #dictionary of versions (helioprojective, helioprojective zoomed, heliographic, heliographic zoomed)
 
     def __init__(self, map, scale=4096):
         self.scale = scale
@@ -34,25 +34,35 @@ class Magnetogram():
         self.cea = self.map.reproject_to(header)
 
     def pre_scale(self, scale):
+        if self.temp_scale == self.scale:
+            return
         self.rescaled = self.map.resample([scale, scale]*u.pix)
         self.temp_scale = scale
 
-    def plot(self, clim=1000, cea=False, scale=4096, crop=False, frame=(0, 0, 4096, 4096), rot=False, start_time=None):
+    def plot(self, clim=1000, cea=False, scale=4096, crop=False, frame=None, rot=False, start_time=None, skip_reset=False):
         #must either graph cea, crop, or scale. Cannot do all three at once
         p = self.map
+        type = 'helioprojective'
         if cea:
             if self.cea is None:
                 self.gen_cea()
             p = self.cea
-        elif crop:
-            p = self.crop(*frame, rot=rot, start_time=start_time)
-        elif scale != 4096:
+            type = 'heliographic'
+        if crop:
+            temp = self.map
+            if cea:
+                if self.cea is None:
+                    self.gen_cea()
+                temp = self.cea
+            p = self.crop(temp, *frame, rot=rot, start_time=start_time, cea=cea)
+            type += ' zoomed'
+        if not cea and not crop and scale != 4096:
             if scale == self.temp_scale:
                 p = self.rescaled
             else:
                 self.pre_scale(scale)
-                return self.plot(clim=clim, cea=cea, scale=scale)
-        self.temp = p
+                return self.plot(clim=clim, cea=cea, scale=scale, crop=crop, frame=frame, rot=rot, start_time=start_time)
+        if not skip_reset: self.var[type] = p
         fig = plt.figure()
         ax = plt.subplot(projection=p)
         im = p.plot(ax)
@@ -60,20 +70,21 @@ class Magnetogram():
 
         return fig, ax, im
 
-    def crop(self, x1, y1, x2, y2, rot=False, start_time=None):
-        wcs = self.temp.wcs
-        top_right = wcs.pixel_to_world(max(x1, x2), max(y1, y2))
-        bottom_left = wcs.pixel_to_world(min(x1, x2), min(y1, y2))
+    def crop(self, map, top_right, bottom_left, rot=False, start_time=None, cea=False):
+        unit = u.arcsec
+        a = ['Tx', 'Ty', 'arcsec']
+        if cea:
+            unit = u.degree
+            a = ['lon', 'lat', 'degree']
 
-        if rot and start_time is not None:
-            center = SkyCoord((top_right.Tx.arcsec + bottom_left.Tx.arcsec)/2 * u.arcsec, (top_right.Ty.arcsec + bottom_left.Ty.arcsec)/2 * u.arcsec, frame=self.temp.coordinate_frame)
-            center = rotate(self.map, center, (self.map.date - start_time).to(u.day))
-            w = top_right.Tx.arcsec - bottom_left.Tx.arcsec
+        center = SkyCoord((getattr(getattr(top_right, a[0]), a[2]) + getattr(getattr(bottom_left, a[0]), a[2]))/2 * unit, (getattr(getattr(top_right, a[1]), a[2]) + getattr(getattr(bottom_left, a[1]), a[2]))/2 * unit, frame=map.coordinate_frame)
+        if rot and start_time is not None: center = rotate(self.map, center, (self.date - start_time).to(u.day))
+        w = getattr(getattr(top_right, a[0]), a[2]) - getattr(getattr(bottom_left, a[0]), a[2])
 
-            top_right = SkyCoord((center.Tx.arcsec + w/2) * u.arcsec, top_right.Ty.arcsec * u.arcsec, frame=self.temp.coordinate_frame)
-            bottom_left = SkyCoord((top_right.Tx.arcsec - w) * u.arcsec, bottom_left.Ty.arcsec * u.arcsec, frame=self.temp.coordinate_frame)
+        top_right = SkyCoord((center.Tx.arcsec + w/2) * unit, getattr(getattr(top_right, a[1]), a[2]) * unit, frame=self.map.coordinate_frame)
+        bottom_left = SkyCoord((getattr(getattr(top_right, a[0]), a[2]) - w) * unit, getattr(getattr(bottom_left, a[1]), a[2]) * unit, frame=self.map.coordinate_frame)
 
-        return self.map.submap(bottom_left, top_right=top_right)
+        return map.submap(bottom_left, top_right=top_right)
 
 
 def get_maps(t: astropy.time.Time, tend=None, interval=45 * u.s, gen_magnetogram=False):
@@ -158,3 +169,14 @@ def rotate(map, point, duration):
     w = (14.713 + -2.396*(math.sin(transformed.lat.degree)**2) + -1.787*(math.sin(transformed.lat.degree)**4)) * u.degree/u.day #2: get angular velocity at longitude (https://en.wikipedia.org/wiki/Solar_rotation)
     new = SkyCoord(transformed.lon.degree*u.degree + w*duration, transformed.lat.degree*u.degree, frame=sunpy.coordinates.HeliographicStonyhurst) #3: create new coordinate using w
     return new.transform_to(map.coordinate_frame)
+
+def flatten(lst):
+    res = []
+
+    for item in lst:
+        if type(item) is list:
+            res.extend(flatten(item))
+        else:
+            res.append(item)
+
+    return res

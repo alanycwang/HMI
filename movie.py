@@ -7,94 +7,68 @@ from PyQt5.QtGui import QIcon
 from superqt import QRangeSlider
 from matplotlib.patches import Rectangle
 import astropy.units as u
-import time, _thread, math, resources
+import time, _thread, math, resources, util, copy
 
 
 class Movie(FigureCanvasQTAgg):
 
+    r = 0 #row/column of movie player inside widget
+    c = 0
     mode = None
-    basespeed = 0.2
-    speed = basespeed  # one frame every 0.5 seconds
     images = []
     im = []
     running = False
-    paused = True
     i = 0
     min = 0
     max = None
     real = True #whether or not the current image is 'real' or a blitted background
     figs = []
     scale = 1024
-    reverse = False
-    reverseSignal = pyqtSignal(bool)
-    rock = False
     time = None
     coordinates = "-"
     value = "-"
     xp = 0
     yp = 0
     zoom = [False, [-1, -1]] # [state (False, True), [start x, start y]
-    changeZoom = pyqtSignal()
+    changeZoom = pyqtSignal(dict)
     pointerUpdate = pyqtSignal(str)
     crop = False
     crop_frame = None
     crop_time = None
     rotate = False
+    type = 'helioprojective'
+    skip_redraw = False
 
-    def __init__(self, maps, clim=1000, w=640, h=480, cea=False, parent=None):
+    def __init__(self, maps, player, clim=1000, w=640, h=480, cea=False, parent=None, **kwargs):
         self.clim = clim
         self.w = w
         self.h = h
         self.cea = cea
-        self.max = len(maps)
         self.maps = maps
 
         for map in self.maps:
             map.pre_scale(self.scale)
 
-        self.images = []
-        self.im = []
-        self.figs = []
         px = 1 / plt.rcParams['figure.dpi']
         plt.ioff()
 
         self.fig_width = self.w * px
         self.fig_height = self.h * px
 
-        fig, _, im = self.maps[0].plot(clim=self.clim, cea=self.cea, scale=self.scale)
-        fig.set_size_inches(self.fig_width, self.fig_height)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+        fig, _, im = self.maps[0].plot(clim=self.clim, cea=self.cea, scale=self.scale, crop=self.crop, frame=self.crop_frame, rot=self.rotate, start_time=self.crop_time, skip_reset=True)
         fig.canvas.draw()
         self.figure = fig
 
-        # pre-draws every frame
-        for i in range(len(self.maps)):
-            fig, _, im = self.maps[i].plot(clim=self.clim, cea=self.cea, scale=self.scale)
-            fig.set_size_inches(self.fig_width, self.fig_height)
-            self.figs.append(fig)
-            fig.canvas.draw()
-            self.im.append(im)
-
-            image = fig.canvas.copy_from_bbox(fig.bbox)
-            self.images.append(image)
-
         FigureCanvasQTAgg.__init__(self, self.figure)
+        self.draw()
+        fig.set_size_inches(self.fig_width, self.fig_height)
+
         self.setParent(parent)
-        self.player = Player(self)
-
-        QTimer.singleShot(1000, self.startup)
-
-    def startup(self):
-        # everything breaks without these few lines even though it essentially does nothing; dont worry about it :)
-        self.update_image(i=1)
-        self.update_image(i=0)
-
-        self.figure = self.figs[self.i]
-        self.real = True
-        self.connect_events()
-        self.draw_idle()
-
-        self.update_image(i=1)
-        self.update_image(i=0)
+        self.player = player
+        self.player.update_idx.connect(self.update_image)
 
     def connect_events(self):
         self.mpl_connect('button_press_event', self.click)
@@ -103,43 +77,16 @@ class Movie(FigureCanvasQTAgg):
         self.mpl_connect('motion_notify_event', self.zoom_handler)
         self.mpl_connect('motion_notify_event', self.mouse_move)
 
-    def start(self):
-        self.running = True
-        self.player.update_frame.connect(FigureCanvasQTAgg.blit)
-        self.player.start()
-
-    def cycle(self):
-        # cycles through showing each image; should be run in a separate thread
-        while self.running:
-            self.update_image()
-            self.cycle_process()
-            time.sleep(self.speed)
-            while self.paused:
-                time.sleep(0.1)
-
-    def inc_i(self):
-        if self.reverse: self.i -= 1
-        else: self.i += 1
-        if self.rock and self.i >= self.max:
-            self.i -= 2
-            self.toggle_reverse()
-        elif self.rock and self.i < self.min:
-            self.i += 2
-            self.toggle_reverse()
-        else: self.i = self.min + (self.i - self.min) % (self.max - self.min)
-
-    def update_image(self, i=None):
+    def update_image(self):
         if self.real:
             self.redraw()
-        if i is not None:
-            self.i = i
-        self.restore_region(self.images[self.i])
-        self.blit(self.figs[self.i].bbox)
-        self.update_process(self.i)
+        self.restore_region(self.images[self.player.i])
+        self.blit(self.figs[self.player.i].bbox)
+        self.update_process(self.player.i)
         self.real = False
-        self.time = str(self.maps[self.i].date)
+        self.time = str(self.maps[self.player.i].date)
         if self.xp is not None and self.yp is not None:
-            self.value = self.maps[self.i].temp.data[int(self.xp + 0.5)][int(self.yp + 0.5)]
+            self.value = self.maps[self.player.i].var[self.type].data[int(self.xp + 0.5)][int(self.yp + 0.5)]
         self.update_pointer()
 
     def click(self, event):
@@ -152,10 +99,6 @@ class Movie(FigureCanvasQTAgg):
             self.drag_zoom(event)
         if event.name == "button_release_event":
             self.release_zoom(event)
-
-    def cycle_process(self):
-        self.player.update_idx.emit(self.i)
-        self.inc_i()
 
     def update_process(self, i):
         return
@@ -179,6 +122,7 @@ class Movie(FigureCanvasQTAgg):
         self.pointerUpdate.emit(f"{self.time} {coordinates} {value}")
 
     def redraw(self):
+        self.fig_width, self.fig_height = self.figure.get_size_inches()
         # print("drawing")
         self.images = []
         self.figs = []
@@ -195,7 +139,7 @@ class Movie(FigureCanvasQTAgg):
             self.images.append(image)
         # print("done drawing")
 
-        self.figure = self.figs[self.i]
+        self.figure = self.figs[self.player.i]
 
         self.connect_events()
         self.draw_idle()
@@ -212,19 +156,12 @@ class Movie(FigureCanvasQTAgg):
 
     def adjust_clim(self, clim): #used to momentarily adjust clim of current frame
         if not self.real:
-            self.figure = self.figs[self.i]
+            self.figure = self.figs[self.player.i]
             self.real = True
             self.connect_events()
-        self.im[self.i].set_clim(-clim, clim)
+        self.im[self.player.i].set_clim(-clim, clim)
         self.clim = clim
         self.draw_idle()
-
-    def toggle_reverse(self, val=None):
-        if val is not None:
-            self.reverse = val
-        else:
-            self.reverse = not self.reverse
-            self.reverseSignal.emit(self.reverse)
 
     def mouse_move(self, event):
         if event.xdata is None:
@@ -235,8 +172,8 @@ class Movie(FigureCanvasQTAgg):
         else:
             try:
                 self.coordinates = str(self.figure.axes[0].format_coord(event.xdata, event.ydata))
-                self.value = self.maps[self.i].temp.data[int(event.ydata + 0.5)][int(event.xdata + 0.5)]
-            except IndexError:
+                self.value = self.maps[self.player.i].var[self.type].data[int(event.ydata + 0.5)][int(event.xdata + 0.5)]
+            except:
                 self.coordinates = "-"
                 self.value = "-"
             self.xp = event.xdata
@@ -250,7 +187,7 @@ class Movie(FigureCanvasQTAgg):
         self.paused = True
 
         if self.real:
-            self.draw_specific(self.i)
+            self.draw_specific(self.player.i)
             self.real = False
             self.update_image()
 
@@ -263,7 +200,7 @@ class Movie(FigureCanvasQTAgg):
     def drag_zoom(self, event):
         if not self.zoom[0]:
             return
-        self.restore_region(self.images[self.i])
+        self.restore_region(self.images[self.player.i])
 
         try:
             self.zoomrect.set_width(event.xdata - self.zoom[1][0])
@@ -281,33 +218,44 @@ class Movie(FigureCanvasQTAgg):
         if not self.zoom[0]:
             return
         self.zoomrect.remove()
-        self.restore_region(self.images[self.i])
+        self.restore_region(self.images[self.player.i])
         self.blit()
         self.flush_events()
         self.zoom[0] = False
-        self.changeZoom.emit()
         self.mode = None
 
-        self.crop = True
-        self.crop_frame = (self.zoom[1][0], self.zoom[1][1], event.xdata, event.ydata)
-        self.crop_time = self.maps[self.i].date
+        # self.crop = True
 
-        temp = self.maps[self.i].temp
-        fig, _, im = self.maps[self.i].plot(clim=self.clim, cea=self.cea, scale=self.scale, crop=self.crop, frame=self.crop_frame)
-        fig.set_size_inches(self.fig_width, self.fig_height)
-        self.figure = fig
-        self.real = True
-        self.connect_events()
-        self.draw_idle()
-        self.maps[self.i].temp = temp #plotting changes temp, which is used for cutouts. If temp is changed and redraw is called, the image will be cropped aagain, essentially stacking crops
-        self.im[self.i] = im
+        wcs = self.maps[self.player.i].var[self.type]
+        top_right = wcs.pixel_to_world(max(self.zoom[1][0], event.xdata)*u.pix, max(self.zoom[1][1], event.ydata)*u.pix)
+        bottom_left = wcs.pixel_to_world(min(self.zoom[1][0], event.xdata)*u.pix, min(self.zoom[1][1], event.ydata)*u.pix)
+
+        self.crop_frame = (top_right, bottom_left)
+        self.crop_time = self.maps[self.player.i].date
+
+        if self.type[-6:0] == 'zoomed':
+            self.crop=True
+            fig, _, im = self.maps[self.player.i].plot(clim=self.clim, cea=self.cea, scale=self.scale, crop=self.crop, frame=self.crop_frame)
+            fig.set_size_inches(self.fig_width, self.fig_height)
+            self.figure = fig
+            self.real = True
+            self.connect_events()
+            self.draw_idle()
+            self.im[self.player.i] = im
+
+        else:
+            self.real = True
+            self.figure = self.figs[self.i]
+            self.changeZoom.emit({"r": self.r, "c": self.c, "crop_frame": self.crop_frame, "crop_time": self.crop_time, "type": self.type + ' zoomed', "crop": True})
 
     def home(self):
+        if not self.crop:
+            return
         self.paused = True
 
         self.crop = False
-        temp = self.maps[self.i].temp
-        fig, _, im = self.maps[self.i].plot(clim=self.clim, cea=self.cea, scale=self.scale, crop=self.crop,
+        temp = self.maps[self.player.i].var[self.type]
+        fig, _, im = self.maps[self.player.i].plot(clim=self.clim, cea=self.cea, scale=self.scale, crop=self.crop,
                                             frame=self.crop_frame)
         fig.set_size_inches(self.fig_width, self.fig_height)
         self.figure = fig
@@ -315,8 +263,8 @@ class Movie(FigureCanvasQTAgg):
         self.connect_events()
         self.draw_idle()
         self.maps[
-            self.i].temp = temp  # plotting changes temp, which is used for cutouts. If temp is changed and redraw is called, the image will be cropped aagain, essentially stacking crops
-        self.im[self.i] = im
+            self.player.i].var[self.type] = temp
+        self.im[self.player.i] = im
 
     def set_zoom(self, val):
         if val:
@@ -324,20 +272,54 @@ class Movie(FigureCanvasQTAgg):
         else:
             self.mode = None
 
-    def blit(self, bbox=None):
-        self.player.update_frame.emit(
-            self)  # blit function will be called from inside "Player" thread, so it must be overidden to signal a call from main thread
-
 class Player(QThread):
-    update_frame = pyqtSignal(object)
-    update_idx = pyqtSignal(int)
 
-    def __init__(self, canvas):
+    update_idx = pyqtSignal(int)
+    reverseSignal = pyqtSignal(bool)
+
+    basespeed = 0.2
+    speed = basespeed
+    i = 0
+    reverse = False
+    rock = False
+    min = 0
+    max = None
+    paused = True
+
+    def __init__(self, min, max):
+        self.min = min
+        self.max = max
         super().__init__()
-        self.canvas = canvas
 
     def run(self):
-        self.canvas.cycle()
+        while True:
+            self.inc_i()
+            self.update_idx.emit(self.i)
+            while self.paused:
+                time.sleep(0.1)
+            time.sleep(self.speed)
+
+    def inc_i(self):
+        if self.reverse: self.i -= 1
+        else: self.i += 1
+        if self.rock and self.i >= self.max:
+            self.i -= 2
+            self.toggle_reverse()
+        elif self.rock and self.i < self.min:
+            self.i += 2
+            self.toggle_reverse()
+        else: self.i = self.min + (self.i - self.min) % (self.max - self.min)
+
+    def change_i(self, i):
+        self.i = i
+        self.update_idx.emit(i)
+
+    def toggle_reverse(self, val=None):
+        if val is not None:
+            self.reverse = val
+        else:
+            self.reverse = not self.reverse
+            self.reverseSignal.emit(self.reverse)
 
 class Slider(QSlider):
     s = """
@@ -484,17 +466,16 @@ class RangeSlider(QRangeSlider):
         self.setMaximum(max - 1)
         self.setValue((0, max - 1))
 
-class Object(object):
-    pass
-
 class MoviePlayerQT(QWidget):
 
     i = 0
+    change_idx = pyqtSignal(int)
 
     def __init__(self, maps, **kwargs):
         super().__init__(**kwargs)
 
         self.len = len(maps)
+        self.maps = maps
 
         self.mainwidget = QWidget()
         self.setChildrenFocusPolicy(self.mainwidget, Qt.NoFocus)
@@ -503,68 +484,87 @@ class MoviePlayerQT(QWidget):
         self.setStyleSheet("QObject { background: white; }")
         self.mainlayout.addWidget(self.mainwidget)
 
-        self.movie = Movie(maps)
-        self.layout.addWidget(self.movie, 0, 0, 1, -1)
-        self.start = self.movie.start
+        self.player = Player(0, len(maps))
+        self.change_idx.connect(self.player.change_i)
+        self.start = self.player.start
 
-        #play/pause button
+        self.movie = [[Movie(maps, self.player)]]
+        self.movie[0][0].changeZoom.connect(lambda d: self.add_movie(**d))
+        self.moviewidget = QWidget()
+        self.movielayout = QGridLayout(self.moviewidget)
+        self.layout.addWidget(self.moviewidget, 0, 0, 1, -1)
+        for i, row in enumerate(self.movie):
+            for j, movie in enumerate(row):
+                self.movielayout.addWidget(movie, i, j)
+
+        self.load_widgets()
+
+        self.start()
+
+        QTimer.singleShot(1000, self.startup)
+
+    def load_widgets(self):
+        # play/pause button
         self.pb = PlayButton()
         self.pb.clicked.connect(self.toggle)
         self.add_widget(self.pb)
         self.pb.setToolTip("Play/Pause")
 
-        #back button
+        # back button
         self.bb = Button(icon=QIcon(':/movie-player/back.png'))
         self.bb.clicked.connect(lambda _: self.step(
-            (self.movie.i - 1) % len(maps)))
+            (self.player.i - 1) % len(self.maps)))
         self.add_widget(self.bb)
         self.bb.setToolTip("Back")
 
-        #forward button
+        # forward button
         self.fb = Button(icon=QIcon(':/movie-player/forward.png'))
         self.fb.clicked.connect(lambda _: self.step(
-            (self.movie.i + 1) % len(
-                maps)))  # step is scaled based on speed multiplier
+            (self.player.i + 1) % len(
+                self.maps)))  # step is scaled based on speed multiplier
         self.add_widget(self.fb)
         self.fb.setToolTip("Forward")
 
-        #play in reverse button
+        # play in reverse button
         self.rb = Button(icon=QIcon(':/movie-player/reverse.png'))
         self.rb.setCheckable(True)
-        self.rb.clicked.connect(lambda _: self.movie.toggle_reverse(val=self.rb.isChecked()))
-        self.movie.reverseSignal.connect(lambda val: self.rb.setChecked(val))
+        self.rb.clicked.connect(lambda _: self.player.toggle_reverse(val=self.rb.isChecked()))
+        self.player.reverseSignal.connect(lambda val: self.rb.setChecked(val))
         self.add_widget(self.rb)
         self.rb.setToolTip("Play in Reverse")
 
-        #rock/loop button
+        # rock/loop button
         self.rlb = Button(icon=QIcon(':/movie-player/rock.png'))
         self.rlb.setCheckable(True)
         self.rlb.clicked.connect(self.set_rock)
         self.add_widget(self.rlb)
         self.rlb.setToolTip("Rock/Loop")
 
-        #home button
+        # home button
         self.hb = Button(icon=QIcon(':/movie-player/home.png'))
-        self.hb.clicked.connect(self.movie.home)
+        self.hb.clicked.connect(self.home)
         self.add_widget(self.hb)
         self.hb.setToolTip("Home")
 
-        #crop button
+        # crop button
         self.cb = Button(icon=QIcon(':/movie-player/crop.png'))
         self.cb.setCheckable(True)
-        self.cb.clicked.connect(self.movie.set_zoom)
+        for movie in util.flatten(self.movie):
+            self.cb.clicked.connect(movie.set_zoom)
         self.add_widget(self.cb)
         self.cb.setToolTip("Zoom in")
-        self.movie.changeZoom.connect(lambda: self.cb.setChecked(False))
+        for movie in util.flatten(self.movie):
+            movie.changeZoom.connect(lambda _: self.cb.setChecked(False))
 
-        #track button
+        # track button
         self.tb = Button(icon=QIcon(':/movie-player/track.png'))
         self.tb.setCheckable(True)
         self.tb.clicked.connect(self.set_track)
         self.add_widget(self.tb)
         self.tb.setToolTip("Track zoomed location through movie")
+        self.tb.setChecked(True)
 
-        #speed slider
+        # speed slider
         self.ss = Slider(Qt.Horizontal)
         self.ss.setMinimum(-400)
         self.ss.setMaximum(400)
@@ -574,59 +574,72 @@ class MoviePlayerQT(QWidget):
         self.add_widget(self.ss)
         self.ss.setToolTip("Set Speed")
 
-        #speed indicator
+        # speed indicator
         self.si = QLabel()
         self.si.setText("1.00x")
         self.add_widget(self.si)
         self.si.setToolTip("Speed")
 
-        #clipping range slider
+        # clipping range slider
         self.cs = Slider(Qt.Horizontal)
         self.cs.setMinimum(100)
         self.cs.setMaximum(1200)
-        self.cs.setValue(self.movie.clim)
+        self.cs.setValue(self.movie[0][0].clim)
         self.cs.sliderMoved.connect(self.adjust_clim)
         self.cs.sliderMoved.connect(lambda val: self.ci.setText("%4dG" % (val)))
         self.cs.setMinimumWidth(50)
         self.add_widget(self.cs)
         self.cs.setToolTip("Adjust Clipping Values")
 
-        #clipping indicator
+        # clipping indicator
         self.ci = QLabel()
         self.ci.setText("1000G")
         self.add_widget(self.ci)
         self.cs.setToolTip("Clipping Values")
 
-        #pointer indicator
+        # pointer indicator
         self.pi = QLabel()
         self.add_widget(self.pi)
         self.pi.setToolTip("Time Location Value")
-        self.movie.pointerUpdate.connect(lambda val: self.pi.setText(val))
+        for movie in util.flatten(self.movie):
+            movie.pointerUpdate.connect(lambda val: self.pi.setText(val))
         self.pi.setMinimumWidth(240)
 
-        #progressbar
+        # progressbar
         self.sl = Slider(Qt.Horizontal)
         self.sl.setMinimum(0)
-        self.sl.setMaximum(len(maps) - 1)
+        self.sl.setMaximum(len(self.maps) - 1)
         self.sl.setValue(0)
         self.sl.setTickPosition(0)
         self.layout.addWidget(self.sl, 2, 0, 1, self.i)
         self.sl.sliderMoved.connect(self.slider)
-        self.movie.player.update_idx.connect(self.update_slider)
+        self.player.update_idx.connect(self.update_slider)
         self.sl.setMaximumWidth(16777215)
 
-        #trimming slider
-        self.ts = RangeSlider(self.movie.max, Qt.Horizontal)
+        # trimming slider
+        self.ts = RangeSlider(self.player.max, Qt.Horizontal)
         self.ts.sliderMoved.connect(self.update_range)
         self.layout.addWidget(self.ts, 3, 0, 1, self.i)
         self.ts.setToolTip("Adjust Playback Range")
 
-        #image label
+        # image label
         self.pl = QLabel()
-        self.pl.setText(f'1/{len(maps)}')
+        self.pl.setText(f'1/{len(self.maps)}')
         self.layout.addWidget(self.pl, 2, self.i)
 
-        self.start()
+    def startup(self):
+        # everything breaks without these few lines even though it essentially does nothing; dont worry about it :)
+        self.player.change_i(0)
+        self.player.change_i(1)
+
+        for movie in util.flatten(self.movie):
+            movie.figure = movie.figs[self.player.i]
+            movie.real = True
+            movie.connect_events()
+            movie.draw_idle()
+
+        self.player.change_i(1)
+        self.player.change_i(0)
 
     def setChildrenFocusPolicy(self, w, policy):
         def recursiveSetChildFocusPolicy(parentQWidget):
@@ -638,7 +651,7 @@ class MoviePlayerQT(QWidget):
 
     def slider(self, val):
         self.toggle(True, state=True)
-        self.movie.update_image(val)
+        self.change_idx.emit(val)
         self.pl.setText(f'{val + 1}/{self.len}')
 
     def update_slider(self, i):
@@ -647,11 +660,11 @@ class MoviePlayerQT(QWidget):
 
     def toggle(self, _, state=None):  # first parameter so that we can connect toggle to "update_slider"
         if state is not None:
-            self.movie.paused = state
+            self.player.paused = state
         else:
-            self.movie.paused = (not self.movie.paused)
+            self.player.paused = (not self.player.paused)
 
-        self.pb.state(self.movie.paused)
+        self.pb.state(self.player.paused)
 
     def step(self, i):
         self.update_slider(i)
@@ -665,31 +678,64 @@ class MoviePlayerQT(QWidget):
             multiplier = 1 + val / 100
 
         self.si.setText("%1.2fx" % (multiplier))
-        self.movie.speed = self.movie.basespeed / multiplier
+        self.player.speed = self.player.basespeed / multiplier
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Space:
             self.toggle(None)
         elif event.key() == Qt.Key_Left:
-            self.step((self.movie.i - max(1, int(self.movie.basespeed / self.movie.speed + 0.5))) % self.len)
+            self.step((self.player.i - max(1, int(self.player.basespeed / self.player.speed + 0.5))) % self.len)
         elif event.key() == Qt.Key_Right:
-            self.step((self.movie.i + max(1, int(self.movie.basespeed / self.movie.speed + 0.5))) % self.len)
+            self.step((self.player.i + max(1, int(self.player.basespeed / self.player.speed + 0.5))) % self.len)
 
     def update_range(self, val):
         (min, max) = val
-        self.movie.max = int(max + 1)
-        self.movie.min = int(min)
+        self.player.max = int(max + 1)
+        self.player.min = int(min)
 
     def add_widget(self, w):
         self.layout.addWidget(w, 1, self.i)
         self.i += 1
 
     def set_rock(self, val):
-        self.movie.rock = val
+        self.player.rock = val
 
     def adjust_clim(self, val):
-        self.movie.adjust_clim(val)
+        for movie in util.flatten(self.movie):
+            movie.adjust_clim(val)
         self.toggle(True, True)
 
     def set_track(self, val):
-        self.movie.rotate = val
+        for movie in util.flatten(self.movie):
+            movie.rotate = val
+            movie.real = True
+            movie.figure = movie.figs[movie.player.i]
+
+    def add_movie(self, **kwargs):
+        try:
+            try:
+                m = self.movie[kwargs["r"]][kwargs["c"] + 1]
+
+                m.crop = True
+                m.crop_frame = kwargs["crop_frame"]
+                m.crop_time = kwargs["crop_time"]
+
+                m.draw_specific(self.player.i)
+                m.figure = m.figs[self.player.i]
+            except IndexError:
+                m = self.movie[kwargs["r"]][kwargs["c"]]
+                for map in m.maps:
+                    map.var[m.type + " zoomed"] = map.var[m.type]
+                m = Movie(self.maps, self.player, **kwargs)
+                self.movie[kwargs["r"]].append(m)
+                self.movielayout.addWidget(self.movie[kwargs["r"]][-1], kwargs["r"], kwargs["c"] + 1)
+
+                m.pointerUpdate.connect(lambda val: self.pi.setText(val))
+                self.cb.clicked.connect(m.set_zoom)
+
+        except ValueError:
+            print("something went wrong, please try again")
+
+    def home(self):
+        for movie in util.flatten(self.movie):
+            movie.home()
