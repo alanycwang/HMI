@@ -1,13 +1,14 @@
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QSize, QTimer
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QIcon
-from superqt import QRangeSlider
+
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.patches import Rectangle
+
+from superqt import QRangeSlider
 import astropy.units as u
-import time, _thread, math, resources, util, copy
+import time, util, resources
 
 
 class Movie(FigureCanvasQTAgg):
@@ -35,7 +36,7 @@ class Movie(FigureCanvasQTAgg):
     crop = False
     crop_frame = None
     crop_time = None
-    rotate = False
+    rotate = True
     type = 'helioprojective'
     skip_redraw = False
 
@@ -246,7 +247,7 @@ class Movie(FigureCanvasQTAgg):
         else:
             self.real = True
             self.figure = self.figs[self.i]
-            self.changeZoom.emit({"r": self.r, "c": self.c, "crop_frame": self.crop_frame, "crop_time": self.crop_time, "type": self.type + ' zoomed', "crop": True})
+            self.changeZoom.emit({"r": self.r, "c": self.c, "crop_frame": self.crop_frame, "crop_time": self.crop_time, "type": self.type + ' zoomed', "crop": True, "rotate": self.rotate})
 
     def home(self):
         if not self.crop:
