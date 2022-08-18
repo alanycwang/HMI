@@ -1,7 +1,7 @@
 <!DOCTYPE RCC>
 <RCC version="1.0">
     <qresource prefix="slider">
-        <file>handle.png</file>
+        <file>pointer.png</file>
     </qresource>
     <qresource prefix="movie-player">
         <file>back.png</file>

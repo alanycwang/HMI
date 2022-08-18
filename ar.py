@@ -4,7 +4,7 @@ import astropy.units as u
 import pandas as pd
 from ftplib import FTP
 from os.path import exists
-import os, tarfile, pickle, re
+import os, tarfile, pickle, re, getSRS, paramiko
 
 class AR():
     start = astropy.time.Time.strptime("25000101", "%Y%m%d")
@@ -39,48 +39,7 @@ class AR():
         if len(self.df) != 1 and row[1][3] != self.df["Location"][-2][3]:
             self.ct = self.df["Date"][-2]
 
-def update_ar_data():
-
-    def get_ar_number(date, num): #ar numbers are only 4 digits so some are repeated - need to make a distinction
-        if date[:4] == "2002": #2002 is only year with both 9999 and 0000s
-            if int(num) > 5000:
-                return "0" + num
-            else:
-                return "1" + num
-        elif int(date[:4]) > 2002:
-            return "1" + num
-        else:
-            return "0" + num
-
-    def parse_srs_data(file):
-        data = []
-        i = False
-        skip = False
-        with open(file, "r") as fh:
-            for line in fh.readlines():
-                if skip:
-                    skip = False
-                    continue
-                #1: look for I
-                if not i:
-                    if line[0:2] == "I.":
-                        i = True
-                        skip = True
-                #2: parse I data
-                else:
-                    # 3: stop at IA
-                    if line[0:2] == "IA" or line.lower() == "none":
-                        break
-                    else:
-                        # Nmbr Location Lo Area Z LL NN Mag Type
-                        a = line.strip("\n").split(" ")
-                        a[0] = get_ar_number(file[-15:-11], a[0])
-                        a = [x for x in a if x != '']
-                        a.append(astropy.time.Time.strptime(file[-15:-7], "%Y%m%d"))
-                        #print(file[-15:-7])
-                        data.append(a)
-        # print(data)
-        return data
+def update_ar_data(ssh_tunnel=True, ssh_hostname=None, ssh_username=None, ssh_password=None, ssh_wd=""):
 
     # 'data' is an array: [most recent date, data]
     if not exists('./data/srs/parseddata.pkl'):
@@ -88,39 +47,62 @@ def update_ar_data():
     else:
         with open('./data/srs/parseddata.pkl', 'rb') as fh:
             data = pickle.load(fh)
+    
+    print(data[0])
 
-    ftp = FTP('ftp.swpc.noaa.gov')
-    ftp.login()
-    ftp.cwd('pub/warehouse')
+    if ssh_tunnel:
+        #login
+        ssh_client = paramiko.SSHClient()
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh_client.connect(hostname=ssh_hostname, username=ssh_username, password=ssh_password)
+        stdin, stdout, stderr = ssh_client.exec_command(f"cd {ssh_wd}")
+        stdout.channel.set_combine_stderr(True)
+        stdout.channel.recv_exit_status()
 
-    files = []
-    for file in ftp.nlst():
-        if file.isnumeric() and int(file)*10000 >= data[0]:
-            files.append(file)
-    files.sort()
+        #upload script
+        ftp_client = ssh_client.open_sftp()
+        ftp_client.put('./getSRS.py', f'{ssh_wd}/getSRS.py')
 
-    # file = "2022/SRS/20220511SRS.txt"
-    # with open(f"./data/srs/{2022}_SRS/poop", 'wb') as fh:
-    #     ftp.retrbinary(f"retr {file}", fh.write)
+        #run script
+        d = data[0]
+        while True:
+            stdin, stdout, stderr = ssh_client.exec_command(f"python {ssh_wd}/getSRS.py")
+            stdin.write(f"{d}\n")
+            stdin.flush()
+            stdin.write(f"\'{ssh_wd}/td.pkl\'\n")
+            stdin.flush()
+            stdout.channel.set_combine_stderr(True)
+            stdout.channel.recv_exit_status()
+            for i, line in enumerate(stdout.readlines()):
+                print(line)
+                if len(line) == len("failed\n") and line == "failed\n":
+                    print("failed, trying again:", stdout.readlines()[i + 1])
+                    d = int(stdout.readlines()[i + 2])
+                    continue
+            break
+        
+        #retrieve file
+        if not exists("./data/srs"):
+            os.makedirs('./data/srs')
+        ftp_client.get(f"{ssh_wd}/td.pkl", "./data/srs/td.pkl")
+        ftp_client.close()
 
-    td = []
+        #remove files
+        stdin, stdout, stderr = ssh_client.exec_command(f"rm {ssh_wd}/td.pkl")
+        stdout.channel.set_combine_stderr(True)
+        stdout.channel.recv_exit_status()
+        stdin, stdout, stderr = ssh_client.exec_command(f"rm {ssh_wd}/getSRS.py")
+        stdout.channel.set_combine_stderr(True)
+        stdout.channel.recv_exit_status()
 
-    for year in files:
-        if f"{year}/{year}_SRS.tar.gz" in ftp.nlst(year):
-            with open(f"./data/srs/{year}_SRS.tar.gz", 'wb') as fh:
-                ftp.retrbinary(f"retr {year}/{year}_SRS.tar.gz", fh.write)
-            with tarfile.open(f"./data/srs/{year}_SRS.tar.gz") as fh:
-                fh.extractall("./data/srs")
-            for file in os.listdir(f"./data/srs/{year}_SRS"):
-                td.extend(parse_srs_data(f"./data/srs/{year}_SRS/{file}"))
-        else:
-            for file in sorted(ftp.nlst(f"{year}/SRS")):
-                if not exists(f"./data/srs/{year}_SRS"):
-                    os.mkdir(f"./data/srs/{year}_SRS")
-                with open(f"./data/srs/{year}_SRS/{file[-15:]}", 'wb') as fh:
-                    if int(file[-15:-7]) > data[0]: ftp.retrbinary(f"retr {file}", fh.write)
-                data[0] = int(file[-15:-7])
-                td.extend(parse_srs_data(f"./data/srs/{year}_SRS/{file[-15:]}"))
+        ssh_client.close()
+
+        with open('./data/srs/td.pkl', 'rb') as fh:
+            data[0], td = pickle.load(fh)
+    else:
+        data[0], td = getSRS.get_files(data[0])
+    for line in td:
+            line[-1] = astropy.time.Time.strptime(line[-1], "%Y%m%d")
 
     for item in td:
         if len(item) != 9:
@@ -175,7 +157,7 @@ def filter_ar(data, start=None, end=None, ct=None, longevity=None, centering=Non
             continue
         if longevity is not None and value.longevity != longevity:
             continue
-        if not cf:
+        if not cf(value.centering):
             continue
 
 
