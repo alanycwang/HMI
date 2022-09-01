@@ -11,17 +11,17 @@ class AppQT(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # start = time.time()
-        # n = 20
-        # interval = 3*u.hour
-        # tstart = astropy.time.Time('2017-01-21T09:45:00', scale='utc', format='isot')
-        # tend = tstart + n*interval + 1*u.s
-        # maps = util.get_maps(tstart, tend, interval=interval, overwrite=True)
-        # maps = movie.MList(maps)
-        # maps.transform(projections.CylindricalEqualArea)
-        # with open('maps.pkl', 'wb') as fh:
-        #     pickle.dump(maps, fh)
-        # print(time.time() - start)
+        start = time.time()
+        n = 20
+        interval = 3*u.hour
+        tstart = astropy.time.Time('2017-01-21T09:45:00', scale='utc', format='isot')
+        tend = tstart + n*interval + 1*u.s
+        maps = util.get_maps(tstart, tend, interval=interval, overwrite=True)
+        maps = movie.MList(maps)
+        maps.transform(projections.CylindricalEqualArea)
+        with open('maps.pkl', 'wb') as fh:
+            pickle.dump(maps, fh)
+        print(time.time() - start)
         
         with open('maps.pkl', 'rb') as fh:
             maps = pickle.load(fh)
