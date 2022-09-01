@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import *
 import matplotlib.pyplot as plt
-import movie, sys, pickle, time, warnings, util, search
+import movie, sys, pickle, time, warnings, util, search, projections
 from PyQt5.QtCore import Qt
 import sunpy.map
 import astropy.time
@@ -11,15 +11,17 @@ class AppQT(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        # start = time.time()
         # n = 20
         # interval = 3*u.hour
         # tstart = astropy.time.Time('2017-01-21T09:45:00', scale='utc', format='isot')
         # tend = tstart + n*interval + 1*u.s
         # maps = util.get_maps(tstart, tend, interval=interval, overwrite=True)
         # maps = movie.MList(maps)
-        # maps.genCEA()
+        # maps.transform(projections.CylindricalEqualArea)
         # with open('maps.pkl', 'wb') as fh:
         #     pickle.dump(maps, fh)
+        # print(time.time() - start)
         
         with open('maps.pkl', 'rb') as fh:
             maps = pickle.load(fh)
@@ -65,4 +67,4 @@ if __name__ == '__main__':
     window = AppQT()
     sys.exit(app.exec_())
 
-    #ar.update_ar_data()
+    # ar.update_ar_data()

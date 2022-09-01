@@ -1,5 +1,4 @@
-test*.*
+/.vscode
 /__pycache__
 /data
 maps.pkl
-getFTP.py

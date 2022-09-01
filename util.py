@@ -19,7 +19,12 @@ def set_proxy(proxy):
     os.environ['ftp_proxy'] = proxy
     os.environ['FTP_PROXY'] = proxy
 
-
+#if no value for tend is provided, the function will return the image that was taken closest to time t. Otherwise, it will return images between t and tend
+#interval determines the interval at which images are chosen. For example, if interval = 1 hour, it will pick images starting from t spaced out by 1 hour until it passes time tend
+#if overwrite=False, get_maps will reuse data if it has already been downloaded before
+#proxy automatically sets a proxy
+#if m720s is True, get_maps will download from the hmi.m_720s series instead of hmi.m_45. Note that these images take significantly longer to download and require an interval > 720 seconds
+#an email registered with JSOC is required to download from hmi.m_720s
 def get_maps(t: astropy.time.Time, tend=None, interval=45 * u.s, overwrite=False, proxy=None, m720s=False, email=None):
     if proxy is not None:
         set_proxy(proxy)
@@ -102,6 +107,8 @@ def get_maps(t: astropy.time.Time, tend=None, interval=45 * u.s, overwrite=False
     #print(4)
     return temp
 
+#flattens list 
+#for example: flatten([1, 2, 3, [3, [[2], 3, 1]]]) returns [1, 2, 3, 3, 2, 3, 1]
 def flatten(lst):
     res = []
 
@@ -113,46 +120,42 @@ def flatten(lst):
 
     return res
 
-def rotate(map, point, duration, type='hpc'):
-    #sunpy method is stupid, so try rotating with astropy
-    if duration.value == 0:
-        return point
-    if type == 'hpc': transformed = point.transform_to(sunpy.coordinates.HeliographicStonyhurst) #1: get heliographic coordinates
-    else: transformed = point
-    w = (14.713 + -2.396*(math.sin(transformed.lat.degree)**2) + -1.787*(math.sin(transformed.lat.degree)**4)) * u.degree/u.day #2: get angular velocity at longitude (https://en.wikipedia.org/wiki/Solar_rotation)
-    new = SkyCoord(transformed.lon.degree*u.degree + w*duration, transformed.lat.degree*u.degree, frame=sunpy.coordinates.HeliographicStonyhurst) #3: create new coordinate using w
-    if type == 'hpc': return new.transform_to(map.coordinate_frame)
-    else: return new
-
+#takes a value within in_range and scales it to out_range using its relative position inside of in_range
+#for example, scale(2, (0, 10), (50, 100)) returns 60
 def scale(val, in_range: tuple, out_range: tuple):
     in_min, in_max = in_range
     out_min, out_max = out_range
     return out_min + (val - in_min)*((out_max - out_min)/(in_max - in_min))
 
-def reproject_cea(m, coord=None, w=4096, origin_x=0, origin_y=0, clip_h=True, frame="heliographic_stonyhurst", scale=None):
-    if scale is not None:
-        w = int(360/scale + 0.5)
-    else:
-        scale = 360/w
-    h=w/np.pi
-    if coord is None:
-        frame_out = SkyCoord(origin_x, origin_y, unit=u.deg, frame=frame, obstime=m.date, rsun=m.coordinate_frame.rsun)
-    else:
-        frame_out = coord
-    if clip_h:
-        h = int(h + 4 - h%4) #make sure it's divisible by 4 for easier downscaling
-    else:
-        h = int(h + 0.5)
-    header = sunpy.map.make_fitswcs_header((h, w), frame_out, scale=(scale, scale)*u.deg/u.pix, projection_code="CEA") #since the deg/pix ratio for lattitude is not linear, giving the correct ratio makes the projection overcompensate for nonlinearity
-    return m.reproject_to(header)
-
-def rotate(map, point, duration, type='hpc'):
-    #sunpy method is stupid, so try rotating with astropy
+#differentially rotates a given point determined by a rotation time
+#the coordinate returned will be heliographic by default, so out_frame can be provided if otherwise required
+def rotate(point, duration, out_frame=None):
+    #sunpy for some reason uses its own coordinate system instead of SkyCoord when differentially rotating a point, which means we will have to do this ourselves
     if duration.value == 0:
         return point
-    if type == 'hpc': transformed = point.transform_to(sunpy.coordinates.HeliographicStonyhurst) #1: get heliographic coordinates
-    else: transformed = point
+    transformed = point.transform_to(sunpy.coordinates.HeliographicStonyhurst) #1: get heliographic coordinates
     w = (14.713 + -2.396*(math.sin(transformed.lat.degree)**2) + -1.787*(math.sin(transformed.lat.degree)**4)) * u.degree/u.day #2: get angular velocity at longitude (https://en.wikipedia.org/wiki/Solar_rotation)
-    new = SkyCoord(transformed.lon.degree*u.degree + w*duration, transformed.lat.degree*u.degree, frame=sunpy.coordinates.HeliographicStonyhurst) #3: create new coordinate using w
-    if type == 'hpc': return new.transform_to(map.coordinate_frame)
+    new = SkyCoord(transformed.lon.degree*u.degree + w*duration, transformed.lat.degree*u.degree, frame=sunpy.coordinates.HeliographicStonyhurst, obstime=point.obstime) #3: create new coordinate using w
+    if out_frame is not None: 
+        return new.transform_to(out_frame)
     else: return new
+
+#slices a 2d array/image from xmin to xmax and ymin to ymax
+#if any of the parameters exceeds the bounds of the array, extra zeros will be added to preserve the aspect ratio
+def slice_extend(arr, xmin, xmax, ymin, ymax):
+    # print(arr.shape, xmin, xmax, ymin, ymax)
+    w, h = arr.shape
+    diffs = [0 - xmin, xmax - w, 0 - ymin, ymax - h]
+    new = arr[max(0, xmin):min(w, xmax), max(0, ymin):min(h, ymax)]
+    if diffs[0] > 0:
+        new = np.append(np.zeros((diffs[0], h)), new, axis=0)
+        w += diffs[0]
+    if diffs[1] > 0:
+        new = np.append(new, np.zeros((diffs[1], h)), axis=0)
+        w += diffs[1]
+    if diffs[2] > 0:
+        new = np.append(np.zeros((w, diffs[2])), new, axis=1)
+    if diffs[3] > 0:
+        new = np.append(new, np.zeros((w, diffs[3])), axis=1)
+    return new
+

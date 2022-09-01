@@ -6,10 +6,11 @@ from ftplib import FTP
 from os.path import exists
 import os, tarfile, pickle, re, getSRS, paramiko
 
-class AR():
+class AR(): #automatically indexes and formats AR data - contains information for a given AR
     start = astropy.time.Time.strptime("25000101", "%Y%m%d")
     end = astropy.time.Time.strptime("19700101", "%Y%m%d")
     mag_type = []
+    df = None #raw dataframe for ar data
 
     def __init__(self, number, df):
         for i, row in df.iterrows():
@@ -26,6 +27,7 @@ class AR():
         self.number = number
 
     #entries are expected to be appended in order
+    #appends row given by update_ar_data
     def append(self, row):
         self.start = min(self.start, row[-1])
         self.end = max(self.end, row[-1])
@@ -39,16 +41,17 @@ class AR():
         if len(self.df) != 1 and row[1][3] != self.df["Location"][-2][3]:
             self.ct = self.df["Date"][-2]
 
+#updates ar data contained in /data/srs/parseddata.pkl (automatically identifies and skips previously downloaded data)
 def update_ar_data(ssh_tunnel=True, ssh_hostname=None, ssh_username=None, ssh_password=None, ssh_wd=""):
 
-    # 'data' is an array: [most recent date, data]
+    # 'data' is an array: [most recent date, actual data]
     if not exists('./data/srs/parseddata.pkl'):
         data = [0, {}]
     else:
         with open('./data/srs/parseddata.pkl', 'rb') as fh:
             data = pickle.load(fh)
     
-    print(data[0])
+    #print(data[0])
 
     if ssh_tunnel:
         #login
